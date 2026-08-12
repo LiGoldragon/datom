@@ -35,7 +35,7 @@ impl ShapeDefined for Text {
 impl DatomDecode for Text {
     fn decode(walk: &mut DecodeWalk<'_>) -> Result<Self, DatomError> {
         match Self::select(walk.probe()?)? {
-            TextSelection::Legacy => walk.value::<String>().map(Self),
+            TextSelection::Legacy => walk.legacy_string().map(Self),
         }
     }
 }
@@ -138,9 +138,9 @@ impl ShapeDefined for Entry {
 impl DatomDecode for Entry {
     fn decode(walk: &mut DecodeWalk<'_>) -> Result<Self, DatomError> {
         match Self::select(walk.probe()?)? {
-            EntrySelection::Note => walk.value::<Text>().map(Self::Note),
-            EntrySelection::Group => walk.value::<Group>().map(Self::Group),
-            EntrySelection::Tags => walk.value::<TagList>().map(Self::Tags),
+            EntrySelection::Note => walk.selected::<Text>().map(Self::Note),
+            EntrySelection::Group => walk.selected::<Group>().map(Self::Group),
+            EntrySelection::Tags => walk.selected::<TagList>().map(Self::Tags),
         }
     }
 }
@@ -148,9 +148,9 @@ impl DatomDecode for Entry {
 impl DatomEncode for Entry {
     fn encode(&self, walk: &mut EncodeWalk) -> Result<(), DatomError> {
         match self {
-            Self::Note(text) => text.encode(walk),
-            Self::Group(group) => group.encode(walk),
-            Self::Tags(tags) => tags.encode(walk),
+            Self::Note(text) => walk.selected(text),
+            Self::Group(group) => walk.selected(group),
+            Self::Tags(tags) => walk.selected(tags),
         }
     }
 }
@@ -232,14 +232,29 @@ where
     );
 }
 
-fn has_resume(events: &[WalkEvent], context: ContextName, position: usize) -> bool {
-    events.iter().any(|event| {
+fn has_immediate_resume(
+    events: &[WalkEvent],
+    child: ContextName,
+    child_position: usize,
+    parent: ContextName,
+    parent_position: usize,
+) -> bool {
+    events.windows(2).any(|pair| {
         matches!(
-            event,
-            WalkEvent::Resume {
-                context: observed,
-                position: observed_position,
-            } if *observed == context && *observed_position == position
+            pair,
+            [
+                WalkEvent::Exit {
+                    context: observed_child,
+                    position: observed_child_position,
+                },
+                WalkEvent::Resume {
+                    context: observed_parent,
+                    position: observed_parent_position,
+                },
+            ] if *observed_child == child
+                && *observed_child_position == child_position
+                && *observed_parent == parent
+                && *observed_parent_position == parent_position
         )
     })
 }
@@ -271,6 +286,33 @@ fn ruled_primitives_collections_variants_and_dotted_floats_have_witnesses() {
 }
 
 #[test]
+fn maps_round_trip_delimited_keys_and_nested_map_values() {
+    let strings = BTreeMap::from([
+        (
+            "key with space } ] “".to_owned(),
+            "value with } ] “".to_owned(),
+        ),
+        ("dotted.key".to_owned(), "plain".to_owned()),
+    ]);
+    witness(strings);
+
+    let nested = BTreeMap::from([(
+        "outer key } ] “".to_owned(),
+        BTreeMap::from([(
+            "inner key with space".to_owned(),
+            "nested value } ] “".to_owned(),
+        )]),
+    )]);
+    let encoded = DatomText::encode(&nested).expect("nested map writes");
+    assert!(
+        encoded
+            .as_str()
+            .starts_with("Map.[“outer key } ] \\“”.Map.[")
+    );
+    witness(nested);
+}
+
+#[test]
 fn legacy_strings_nest_escape_and_strip_common_indentation() {
     let source = "“\n    first\n      second \\“quoted\\”\n    } ]\n”";
     let decoded = DatomSource::new(source).decode::<String>().unwrap();
@@ -298,27 +340,36 @@ fn deep_shape_defined_fixture_round_trips_and_witnesses_resumption() {
     let report = fixture();
     witness(report.clone());
 
-    let text = DatomText::encode(&report).unwrap();
+    let (text, encode_events) = DatomText::encode_with_trace(&report).unwrap();
     assert!(text.as_str().contains("\\“"));
     assert!(text.as_str().contains("Map.[north.["));
     assert!(text.as_str().contains("Group.{"));
     assert!(text.as_str().contains("Tags.["));
 
-    let (decoded, events) = DatomSource::new(text.as_str())
+    let (decoded, decode_events) = DatomSource::new(text.as_str())
         .decode_with_trace::<Report>()
         .unwrap();
     assert_eq!(decoded, report);
+    assert_eq!(
+        decode_events, encode_events,
+        "reading and writing witness the same structural walk in opposite directions"
+    );
 
-    for (context, position) in [
-        (ContextName::Record("Report"), 1),
-        (ContextName::Map, 1),
-        (ContextName::Vector, 1),
-        (ContextName::Record("Group"), 1),
-        (ContextName::Vector, 1),
+    for (child, child_position, parent, parent_position) in [
+        (ContextName::Record("Group"), 3, ContextName::Vector, 2),
+        (ContextName::Vector, 3, ContextName::Map, 1),
+        (ContextName::Map, 1, ContextName::Record("Report"), 2),
+        (ContextName::Record("Report"), 3, ContextName::Document, 1),
     ] {
         assert!(
-            has_resume(&events, context, position),
-            "the driver resumes {context:?} at its following position"
+            has_immediate_resume(
+                &decode_events,
+                child,
+                child_position,
+                parent,
+                parent_position
+            ),
+            "after {child:?} exits at {child_position}, the driver resumes {parent:?} at {parent_position}"
         );
     }
 }

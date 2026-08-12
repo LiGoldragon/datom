@@ -109,10 +109,17 @@ pub struct DatomText {
 impl DatomText {
     /// Encode one expected Rust value without constructing a document tree.
     pub fn encode<T: DatomEncode>(value: &T) -> Result<Self, DatomError> {
+        Self::encode_with_trace(value).map(|(text, _)| text)
+    }
+
+    /// Encode one expected Rust value and retain the shared walk witness.
+    pub fn encode_with_trace<T: DatomEncode>(
+        value: &T,
+    ) -> Result<(Self, Vec<WalkEvent>), DatomError> {
         let mut walk = EncodeWalk::new();
         walk.value(value)?;
         let text = walk.finish()?;
-        Ok(Self { text })
+        Ok((Self { text }, walk.into_events()))
     }
 
     /// The canonical Datom source.
@@ -129,28 +136,28 @@ impl DatomText {
 /// The reading half of the one shared context-stack driver.
 pub struct DecodeWalk<'source> {
     parser: Parser<'source>,
-    frames: Vec<WalkFrame>,
-    events: Vec<WalkEvent>,
+    structural: StructuralWalk,
 }
 
 impl<'source> DecodeWalk<'source> {
     fn new(source: &'source str) -> Self {
-        let document = WalkFrame::new(ContextName::Document, None);
         Self {
             parser: Parser::new(source),
-            frames: vec![document],
-            events: vec![WalkEvent::Enter {
-                context: ContextName::Document,
-                position: 0,
-            }],
+            structural: StructuralWalk::new(),
         }
     }
 
     /// Read one value and then resume the parent at its following position.
     pub fn value<T: DatomDecode>(&mut self) -> Result<T, DatomError> {
         let value = T::decode(self)?;
-        self.advance_current();
+        self.structural.resume_current();
         Ok(value)
+    }
+
+    /// Enter a shape-selected type's context without advancing the enclosing
+    /// positional frame.  The enclosing [`Self::value`] owns that one resume.
+    pub fn selected<T: DatomDecode>(&mut self) -> Result<T, DatomError> {
+        T::decode(self)
     }
 
     /// Inspect only the shape currently meaningful to this context.
@@ -162,9 +169,9 @@ impl<'source> DecodeWalk<'source> {
     /// current scalar context itself has inherited the ruled map-key end.
     pub fn bare(&mut self) -> Result<&'source str, DatomError> {
         let dot_terminates = self
-            .frames
-            .last()
-            .is_some_and(|frame| frame.terminator == Some(ProtosShape::DotApplied));
+            .structural
+            .current_terminator()
+            .is_some_and(|terminator| terminator == ProtosShape::DotApplied);
         if !dot_terminates
             && matches!(
                 self.parser.probe()?.shape(),
@@ -184,9 +191,8 @@ impl<'source> DecodeWalk<'source> {
         name: &'static str,
         interior: impl FnOnce(&mut Self) -> Result<T, DatomError>,
     ) -> Result<T, DatomError> {
-        let terminator = self.frames.last().and_then(|frame| {
-            (frame.context == ContextName::DottedKey).then_some(ProtosShape::DotApplied)
-        });
+        let terminator = (self.structural.current_context() == Some(ContextName::DottedKey))
+            .then_some(ProtosShape::DotApplied);
         self.with_context(ContextName::Value(name), terminator, interior)
     }
 
@@ -300,81 +306,53 @@ impl<'source> DecodeWalk<'source> {
         terminator: Option<ProtosShape>,
         interior: impl FnOnce(&mut Self) -> Result<T, DatomError>,
     ) -> Result<T, DatomError> {
-        self.push(context, terminator);
+        self.structural.enter(context, terminator);
         let result = interior(self).and_then(|value| {
             if let Some(terminator) = terminator {
                 self.parser.consume_terminator(terminator)?;
             }
             Ok(value)
         });
-        self.pop();
+        self.structural.exit();
         result
-    }
-
-    fn push(&mut self, context: ContextName, terminator: Option<ProtosShape>) {
-        self.frames.push(WalkFrame::new(context, terminator));
-        self.events.push(WalkEvent::Enter {
-            context,
-            position: 0,
-        });
-    }
-
-    fn pop(&mut self) {
-        if let Some(frame) = self.frames.pop() {
-            self.events.push(WalkEvent::Exit {
-                context: frame.context,
-                position: frame.position,
-            });
-        }
-    }
-
-    fn advance_current(&mut self) {
-        if let Some(frame) = self.frames.last_mut() {
-            frame.position += 1;
-            self.events.push(WalkEvent::Resume {
-                context: frame.context,
-                position: frame.position,
-            });
-        }
     }
 
     fn finish(&mut self) -> Result<(), DatomError> {
         self.parser.finish()?;
-        self.pop();
+        self.structural.finish()?;
         Ok(())
     }
 
     fn into_events(self) -> Vec<WalkEvent> {
-        self.events
+        self.structural.into_events()
     }
 }
 
 /// The writing half of the one shared structural walk driver.
 pub struct EncodeWalk {
     output: String,
-    frames: Vec<WalkFrame>,
-    events: Vec<WalkEvent>,
+    structural: StructuralWalk,
 }
 
 impl EncodeWalk {
     fn new() -> Self {
-        let document = WalkFrame::new(ContextName::Document, None);
         Self {
             output: String::new(),
-            frames: vec![document],
-            events: vec![WalkEvent::Enter {
-                context: ContextName::Document,
-                position: 0,
-            }],
+            structural: StructuralWalk::new(),
         }
     }
 
     /// Write one value and resume the parent at its following position.
     pub fn value<T: DatomEncode>(&mut self, value: &T) -> Result<(), DatomError> {
         self.separate_current();
-        value.encode(self)?;
-        self.advance_current();
-        Ok(())
+        self.unseparated_value(value)
+    }
+
+    /// Project a shape-selected type's context without separating or advancing
+    /// the enclosing positional frame.  The enclosing [`Self::value`] owns
+    /// that one resume.
+    pub fn selected<T: DatomEncode>(&mut self, value: &T) -> Result<(), DatomError> {
+        value.encode(self)
     }
 
     /// Write unseparated source owned by the active type context.
@@ -475,13 +453,11 @@ impl EncodeWalk {
         value: &V,
     ) -> Result<(), DatomError> {
         self.separate_current();
-        self.with_context(ContextName::DottedKey, None, |walk| {
-            key.encode(walk)?;
-            walk.raw(".");
-            value.encode(walk)
-        })?;
-        self.advance_current();
-        Ok(())
+        self.structural.enter(ContextName::DottedKey, None);
+        self.unseparated_value(key)?;
+        self.raw(".");
+        self.structural.exit();
+        self.unseparated_value(value)
     }
 
     /// Enter and write one single-payload variant after its glued head and dot.
@@ -503,19 +479,23 @@ impl EncodeWalk {
         terminator: Option<ProtosShape>,
         interior: impl FnOnce(&mut Self) -> Result<(), DatomError>,
     ) -> Result<(), DatomError> {
-        self.push(context, terminator);
+        self.structural.enter(context, terminator);
         let result = interior(self);
         if result.is_ok() {
             if let Some(terminator) = terminator {
                 self.write_terminator(terminator);
             }
         }
-        self.pop();
+        self.structural.exit();
         result
     }
 
     fn separate_current(&mut self) {
-        if self.frames.last().is_some_and(|frame| frame.position > 0) {
+        if self
+            .structural
+            .current_position()
+            .is_some_and(|position| position > 0)
+        {
             self.output.push(' ');
         }
     }
@@ -531,7 +511,44 @@ impl EncodeWalk {
         }
     }
 
-    fn push(&mut self, context: ContextName, terminator: Option<ProtosShape>) {
+    fn finish(&mut self) -> Result<String, DatomError> {
+        self.structural.finish()?;
+        Ok(std::mem::take(&mut self.output))
+    }
+
+    fn unseparated_value<T: DatomEncode>(&mut self, value: &T) -> Result<(), DatomError> {
+        self.selected(value)?;
+        self.structural.resume_current();
+        Ok(())
+    }
+
+    fn into_events(self) -> Vec<WalkEvent> {
+        self.structural.into_events()
+    }
+}
+
+/// Provisional shared driver name: `StructuralWalk` is the sole owner of
+/// context entry, exit, parent positions, resumption, and trace events for
+/// both directions.  It does not settle the shared-framework fork; it is the
+/// smallest adapter proving one structural walk has two directions.
+struct StructuralWalk {
+    frames: Vec<WalkFrame>,
+    events: Vec<WalkEvent>,
+}
+
+impl StructuralWalk {
+    fn new() -> Self {
+        let document = WalkFrame::new(ContextName::Document, None);
+        Self {
+            frames: vec![document],
+            events: vec![WalkEvent::Enter {
+                context: ContextName::Document,
+                position: 0,
+            }],
+        }
+    }
+
+    fn enter(&mut self, context: ContextName, terminator: Option<ProtosShape>) {
         self.frames.push(WalkFrame::new(context, terminator));
         self.events.push(WalkEvent::Enter {
             context,
@@ -539,7 +556,7 @@ impl EncodeWalk {
         });
     }
 
-    fn pop(&mut self) {
+    fn exit(&mut self) {
         if let Some(frame) = self.frames.pop() {
             self.events.push(WalkEvent::Exit {
                 context: frame.context,
@@ -548,7 +565,7 @@ impl EncodeWalk {
         }
     }
 
-    fn advance_current(&mut self) {
+    fn resume_current(&mut self) {
         if let Some(frame) = self.frames.last_mut() {
             frame.position += 1;
             self.events.push(WalkEvent::Resume {
@@ -558,19 +575,34 @@ impl EncodeWalk {
         }
     }
 
-    fn finish(&mut self) -> Result<String, DatomError> {
+    fn current_context(&self) -> Option<ContextName> {
+        self.frames.last().map(|frame| frame.context)
+    }
+
+    fn current_terminator(&self) -> Option<ProtosShape> {
+        self.frames.last().and_then(|frame| frame.terminator)
+    }
+
+    fn current_position(&self) -> Option<usize> {
+        self.frames.last().map(|frame| frame.position)
+    }
+
+    fn finish(&mut self) -> Result<(), DatomError> {
         if self.frames.len() != 1 {
             return Err(DatomError::TrailingInput {
-                text: "unclosed writing context".to_owned(),
+                text: "unclosed structural context".to_owned(),
             });
         }
-        self.pop();
-        Ok(std::mem::take(&mut self.output))
+        self.exit();
+        Ok(())
+    }
+
+    fn into_events(self) -> Vec<WalkEvent> {
+        self.events
     }
 }
 
-/// Provisional internal stack frame; it is the sole owner of parent positions
-/// and terminators, pending the final shared-framework main-type naming.
+/// Provisional internal stack frame; [`StructuralWalk`] owns its lifecycle.
 struct WalkFrame {
     context: ContextName,
     position: usize,
@@ -601,27 +633,25 @@ impl<T: DatomRecord> DatomEncode for T {
 
 impl DatomDecode for String {
     fn decode(walk: &mut DecodeWalk<'_>) -> Result<Self, DatomError> {
-        walk.scalar("String", |walk| {
-            if walk
-                .frames
-                .last()
-                .is_some_and(|frame| frame.terminator == Some(ProtosShape::DotApplied))
+        walk.scalar("String", |walk| match walk.probe()?.shape() {
+            ProtosShape::CurlyQuoteDelimited => walk.legacy_string(),
+            _ if walk
+                .structural
+                .current_terminator()
+                .is_some_and(|terminator| terminator == ProtosShape::DotApplied) =>
             {
-                return Ok(walk.bare()?.to_owned());
+                Ok(walk.bare()?.to_owned())
             }
-            match walk.probe()?.shape() {
-                ProtosShape::BareSymbol => Ok(walk.bare()?.to_owned()),
-                ProtosShape::CurlyQuoteDelimited => walk.legacy_string(),
-                ProtosShape::ParenthesisDelimited | ProtosShape::DotParenthesized => {
-                    Err(DatomError::ShapeNotYetRuled {
-                        shape: ProtosShape::ParenthesisDelimited,
-                    })
-                }
-                found => Err(DatomError::UnexpectedShape {
-                    expected: "a Datom string",
-                    found,
-                }),
+            ProtosShape::BareSymbol => Ok(walk.bare()?.to_owned()),
+            ProtosShape::ParenthesisDelimited | ProtosShape::DotParenthesized => {
+                Err(DatomError::ShapeNotYetRuled {
+                    shape: ProtosShape::ParenthesisDelimited,
+                })
             }
+            found => Err(DatomError::UnexpectedShape {
+                expected: "a Datom string",
+                found,
+            }),
         })
     }
 }
