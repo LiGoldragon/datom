@@ -1,140 +1,91 @@
-//! Expectation-driven dotted-prefix reading.
-//!
-//! Datom is strictly typed and positional, so the expected type is known at
-//! every position and the reader advances by mode. A dotted prefix — a leading
-//! atom split at its first period into a prefix and a value — is read only in
-//! the two modes that expect one; in every other mode a period is ordinary atom
-//! text. This is the single implementation of that mechanism, exported so
-//! downstream readers reuse it rather than hand-rolling their own dotted-prefix
-//! reading.
+//! The fixed structural vocabulary used by the Datom walk.
 
-use crate::codec::DatomDecodeError;
-use crate::parser::{Atom, Block};
+use crate::DatomError;
 
-/// The two positions at which a reader may split a dotted prefix off a leading
-/// atom. The split algorithm — divide the leading atom at its first top-level
-/// period — is shared; the kinds differ in the head case each accepts, which is
-/// how the reader catches a dotted prefix used in the wrong place.
+/// Provisional naming note: `ProtosShape`, its flat variants, `ShapeProbe`,
+/// and `ShapeDefined` are the currently smallest names for the open
+/// Protos-shape naming fork.  The vocabulary itself is fixed; only these
+/// spellings remain open.  The implementation bead records every name here.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DottedExpectation {
-    /// A capitalized head naming a type or generic application, as in
-    /// `Vector.X` or `Map.(Key Value)`.
-    Capitalized,
-    /// A leading lowercase name segment: map keys, import path segments, and
-    /// field disambiguators.
-    Uncapitalized,
+pub enum ProtosShape {
+    /// A context-local unstructured symbol.  `BareSymbol` is provisional over
+    /// the earlier `BareAtom` spelling.
+    BareSymbol,
+    CurlyQuoteDelimited,
+    ParenthesisDelimited,
+    SquareBracketDelimited,
+    BraceDelimited,
+    DotApplied,
+    DotBraced,
+    DotBracketed,
+    DotParenthesized,
 }
 
-impl DottedExpectation {
-    /// Human-readable name of this expectation for diagnostics.
-    pub fn description(self) -> &'static str {
+impl ProtosShape {
+    /// Whether this shape begins with a glued dot after its head.
+    pub(crate) fn is_dotted(self) -> bool {
+        matches!(
+            self,
+            Self::DotApplied | Self::DotBraced | Self::DotBracketed | Self::DotParenthesized
+        )
+    }
+
+    /// A stable diagnostic spelling for this fixed vocabulary.
+    pub(crate) fn description(self) -> &'static str {
         match self {
-            Self::Capitalized => "capitalized dotted prefix",
-            Self::Uncapitalized => "uncapitalized dotted prefix",
+            Self::BareSymbol => "bare symbol",
+            Self::CurlyQuoteDelimited => "curly-quote-delimited text",
+            Self::ParenthesisDelimited => "parenthesis-delimited Meaning",
+            Self::SquareBracketDelimited => "square-bracket-delimited vector",
+            Self::BraceDelimited => "brace-delimited record",
+            Self::DotApplied => "dotted application",
+            Self::DotBraced => "dotted brace application",
+            Self::DotBracketed => "dotted bracket application",
+            Self::DotParenthesized => "dotted parenthesis application",
         }
-    }
-
-    fn accepts_head(self, prefix: &str) -> bool {
-        match prefix.chars().next() {
-            Some(first) => match self {
-                Self::Capitalized => first.is_ascii_uppercase(),
-                Self::Uncapitalized => first.is_ascii_lowercase(),
-            },
-            None => false,
-        }
-    }
-
-    /// Read one dotted entry from the head of a block sequence under this
-    /// expectation. The leading block must be a dot-application `key.value`
-    /// whose head is an atom of the accepted case. The key is that head atom
-    /// and the value is the application's payload — which may itself be a
-    /// nested application when the value is dotted (`key.a.b.c`), since the raw
-    /// grammar binds the period right-associatively. A dotted entry is always
-    /// exactly one application block, so exactly one block is consumed; the
-    /// former inline-versus-following-block split no longer exists now that the
-    /// raw parser binds the period.
-    pub fn read_entry(self, blocks: &[Block]) -> Result<DottedEntry, DatomDecodeError> {
-        let block = blocks
-            .first()
-            .ok_or(DatomDecodeError::ExpectedDottedEntry {
-                expectation: self.description(),
-            })?;
-        let (head, payload) =
-            block
-                .as_application()
-                .ok_or(DatomDecodeError::ExpectedDottedEntry {
-                    expectation: self.description(),
-                })?;
-        let key_atom = head.atom().ok_or(DatomDecodeError::ExpectedDottedEntry {
-            expectation: self.description(),
-        })?;
-        if !self.accepts_head(key_atom.text()) {
-            return Err(DatomDecodeError::DottedEntryCaseMismatch {
-                expectation: self.description(),
-                prefix: key_atom.text().to_owned(),
-            });
-        }
-        Ok(DottedEntry {
-            key: head.clone(),
-            value: payload.clone(),
-            consumed: 1,
-        })
-    }
-
-    /// Read one dotted entry from a single already-extracted string under this
-    /// expectation. This is the string-level entry form of the same mechanism
-    /// as [`read_entry`](Self::read_entry): the same split-at-first-top-level-dot
-    /// rule (shared through `Atom::split_text_at_first_dot`), the same
-    /// per-kind head-case enforcement, and the same typed errors, returning the
-    /// key and value as string slices. It serves a consumer that already holds
-    /// an atom's text rather than a block sequence, so it routes through the
-    /// shared mechanism instead of re-deriving a local `split_once`. The whole
-    /// value is carried inline after the period, since a lone string has no
-    /// following block to supply it; a string that ends at the period is a
-    /// missing value. Meaning is still expectation-driven: the caller declares
-    /// the kind and nothing scans the text to decide it.
-    pub fn read_string_entry(self, text: &str) -> Result<(&str, &str), DatomDecodeError> {
-        let (prefix, remainder) =
-            Atom::split_text_at_first_dot(text).ok_or(DatomDecodeError::ExpectedDottedEntry {
-                expectation: self.description(),
-            })?;
-        if !self.accepts_head(prefix) {
-            return Err(DatomDecodeError::DottedEntryCaseMismatch {
-                expectation: self.description(),
-                prefix: prefix.to_owned(),
-            });
-        }
-        let value = remainder.ok_or(DatomDecodeError::DottedEntryMissingValue {
-            expectation: self.description(),
-        })?;
-        Ok((prefix, value))
     }
 }
 
-/// One dotted entry read under a [`DottedExpectation`]: the key block split from
-/// the leading atom's prefix, the value block, and how many source blocks the
-/// entry consumed.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DottedEntry {
-    key: Block,
-    value: Block,
-    consumed: usize,
+/// The lexical evidence a context gives to a shape-discriminated type.
+///
+/// `ShapeProbe` is provisional naming under the same Protos-shape naming fork
+/// as [`ProtosShape`].  It deliberately contains no value and performs no
+/// parsing: discrimination receives only the met shape and optional head.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShapeProbe<'source> {
+    shape: ProtosShape,
+    head: Option<&'source str>,
 }
 
-impl DottedEntry {
-    /// The key block — the atom split from the leading prefix.
-    pub fn key(&self) -> &Block {
-        &self.key
+impl<'source> ShapeProbe<'source> {
+    pub(crate) fn new(shape: ProtosShape, head: Option<&'source str>) -> Self {
+        Self { shape, head }
     }
 
-    /// The value block — the inline remainder atom or the following block.
-    pub fn value(&self) -> &Block {
-        &self.value
+    /// The fixed shape met at this position.
+    pub fn shape(self) -> ProtosShape {
+        self.shape
     }
 
-    /// How many source blocks this entry consumed: one when the value stayed
-    /// inline in the leading atom, two when the value is the following block.
-    pub fn consumed(&self) -> usize {
-        self.consumed
+    /// The optional dotted-application head, without its glued dot.
+    pub fn head(self) -> Option<&'source str> {
+        self.head
     }
+}
+
+/// Selects a variant from a met standard shape.
+///
+/// Provisional name: `ShapeDefined` is one candidate in the unresolved trait
+/// naming fork.  This trait is intentionally discrimination-only: an impl may
+/// select its `Selection`, but it must not read an interior.  The selected
+/// type's [`crate::DatomDecode`] context owns that later read.
+pub trait ShapeDefined: Sized {
+    /// A type-local variant or selection token; it must not be a parsed value.
+    type Selection;
+
+    /// The standard shapes this type recognizes at this one position.
+    fn shapes() -> &'static [ProtosShape];
+
+    /// Select only the type-local variant announced by `met`.
+    fn select(met: ShapeProbe<'_>) -> Result<Self::Selection, DatomError>;
 }

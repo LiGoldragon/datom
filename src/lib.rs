@@ -1,8 +1,8 @@
-//! Structural Datom reader and codec.
+//! Ruled Datom serialization and deserialization.
 //!
-//! This crate recognizes Datom delimiters, spans, atoms, and block structure.
-//! Its codec owns Datom value shapes for Rust values. Serialization and
-//! deserialization only — no Rust code generation (that belongs to Ethos).
+//! Datom is positional typed data.  This crate has no Rust-generation role;
+//! Rust generation belongs to Ethos.  Parenthesized Meaning is recognized as a
+//! reserved shape and rejected until its vocabulary is ruled.
 
 mod codec;
 mod expectation;
@@ -10,13 +10,8 @@ mod parser;
 mod pretty;
 
 pub use codec::{
-    DatomBlock, DatomBody, DatomBodyDecode, DatomBodyEncode, DatomBodyEncoding, DatomCollection,
-    DatomDecode, DatomDecodeError, DatomDocumentBody, DatomDocumentDecode, DatomDocumentEncode,
-    DatomDocumentEncoding, DatomEncode, DatomSource, DatomString,
+    ContextName, DatomDecode, DatomEncode, DatomRecord, DatomSource, DatomText, DecodeWalk,
+    EncodeWalk, WalkEvent,
 };
-pub use expectation::{DottedEntry, DottedExpectation};
-pub use parser::{
-    Atom, AtomClassification, Block, DatomError, Delimiter, Document, ParseMode, PipeText,
-    SourcePosition, SourceSpan, StructureHeader, StructureShape, StructureSlot,
-};
-pub use pretty::{DatomOutputForm, PrettyLayout};
+pub use expectation::{ProtosShape, ShapeDefined, ShapeProbe};
+pub use parser::DatomError;
