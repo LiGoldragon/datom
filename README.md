@@ -1,22 +1,32 @@
 # datom
 
-Datom is serialization and deserialization only. It does not generate Rust;
-that belongs to Ethos.
+Datom is pure positional typed data on the published Protos substrate. It
+does not generate Rust; that belongs to Ethos. Protos owns lexical blocks,
+shape vocabulary, string carriers, and the only structural walk. Datom adds
+only context-sensitive typed realization and textual projection.
 
-Datom reads expected Rust types directly and writes the same positional walk in
-reverse. Text contains no field names or self-describing tags.
+## Current typed surface
 
-## Ruled surface
+- `Report`, `Entry`, `Group`, `TagList`, `Text`, and `InterimNote` are the
+  concrete positional models used by the registered design examples.
+- `ReportText` and `InterimNoteText` are concrete typed textual carriers. They
+  implement Protos `Realize`; their matching real types implement Protos
+  `Textualize`.
+- `EvidencedRealizing` and `EvidencedTextualizing` return those same typed
+  values/texts paired with read-only transition evidence copied from the
+  actual Protos driver; dialect code never owns or proxies `Walk`.
+- Records read and write field positions only. Variants carry their Head;
+  their payload is headless in its own context.
+- Strings project bare exactly when the Protos scanner can carry the complete
+  value as one bare block; otherwise they use parenthesis. Curly quotes are
+  accepted as the legacy input carrier. Parenthesis projection preserves a
+  trailing backslash, literal escaped parentheses, and balanced nested pairs.
+  Meaning remains deferred to
+  `structuredStringType.md` and bead `primary-xqb.8.5`.
+- `Map.[north.[…]]` is a keyed vector entry with one structural Protos frame.
+  Plain `Map.[kind.core]` is an unambiguous bare pair. Keys containing dots,
+  and delimited keys followed by `.`, are deliberately unsupported pending a
+  psyche ruling; they return a Datom fault rather than changing Protos.
 
-- Bare symbols, integers, dotted floats, `True`, `False`, `None`, and
-  single-payload variants such as `Some.value`.
-- Curly legacy strings: `“text”`. They nest, use ruled backslash escapes, and
-  strip common indentation from multiline source text.
-- Vectors: `[value value]`; brace records: `Type.{field-position …}`; maps:
-  `Map.[key.value key.value]`.
-- Dots are glued and right-associative. `;;` comments run to the line end.
-
-Parentheses are reserved for the future Meaning shape. The codec recognizes
-`(` and rejects it with a shape-not-yet-ruled error; it does not model Meaning
-or its annotation vocabulary. Pipe text, parenthesis strings, angles, and
-Datom generics are not supported syntax.
+Canonical text is a block projection, not preservation of original whitespace
+or the legacy curly carrier spelling.

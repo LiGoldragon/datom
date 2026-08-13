@@ -1,17 +1,12 @@
-//! Ruled Datom serialization and deserialization.
+//! Datom is pure positional typed data on the Protos structural substrate.
 //!
-//! Datom is positional typed data.  This crate has no Rust-generation role;
-//! Rust generation belongs to Ethos.  Parenthesized Meaning is recognized as a
-//! reserved shape and rejected until its vocabulary is ruled.
+//! Its types supply context; Protos owns lexical blocks, structural shapes,
+//! and the one scoped walk lifecycle. Datom does not model Meaning.
 
-mod codec;
-mod expectation;
-mod parser;
-mod pretty;
+mod datom;
 
-pub use codec::{
-    ContextName, DatomDecode, DatomEncode, DatomRecord, DatomSource, DatomText, DecodeWalk,
-    EncodeWalk, WalkEvent,
+pub use datom::{
+    DatomEvidence, DatomFault, DatomProblem, Entry, EvidenceObserving, EvidencedRealizing,
+    EvidencedTextualizing, Group, InterimNote, InterimNoteText, Projected, ProjectionViewing,
+    RealizationViewing, Realized, Report, ReportText, TagList, Text,
 };
-pub use expectation::{ProtosShape, ShapeDefined, ShapeProbe};
-pub use parser::DatomError;

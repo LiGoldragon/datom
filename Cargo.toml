@@ -8,6 +8,9 @@ repository  = "https://github.com/LiGoldragon/datom"
 description = "Datom text serialization and deserialization."
 publish     = false
 
+[dependencies]
+protos = { git = "https://github.com/LiGoldragon/protos", rev = "d0f98aca41104b970862679c622d828222a83cfa" }
+
 [lib]
 name = "datom"
 path = "src/lib.rs"

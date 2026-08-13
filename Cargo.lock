@@ -5,3 +5,11 @@ version = 4
 [[package]]
 name = "datom"
 version = "0.1.0"
+dependencies = [
+ "protos",
+]
+
+[[package]]
+name = "protos"
+version = "0.6.0"
+source = "git+https://github.com/LiGoldragon/protos?rev=d0f98aca41104b970862679c622d828222a83cfa#d0f98aca41104b970862679c622d828222a83cfa"

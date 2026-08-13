@@ -1,6 +1,10 @@
-## Protos estate status
+## Datom estate status
 
-Stack: correct-new
-Status: active
-Role: Datom text serialization/deserialization codec.
-Current divergence: provisional codec; tracked by primary-xqb.8.1. This marking makes no syntax or implementation decision.
+Stack: quick-new
+Status: active substrate dialect
+Role: pure positional typed data riding the published Protos shapes, lexical
+blocks, string carriers, and scoped structural walk.
+
+Datom owns context-sensitive typed realization and textual projection only. It
+does not own lexical scanning, structural lifecycle, Meaning, or a legacy
+terminal-stack role. The current recut is tracked by `primary-xqb.8.14`.
