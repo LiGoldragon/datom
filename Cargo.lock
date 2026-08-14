@@ -12,4 +12,4 @@ dependencies = [
 [[package]]
 name = "protos"
 version = "0.6.0"
-source = "git+https://github.com/LiGoldragon/protos?rev=884f9334a658415053da277973df38549b82994a#884f9334a658415053da277973df38549b82994a"
+source = "git+https://github.com/LiGoldragon/protos?rev=ac22e233a56badb6025641feb1f3267702a493ca#ac22e233a56badb6025641feb1f3267702a493ca"
