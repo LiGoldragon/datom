@@ -9,7 +9,7 @@ description = "Datom text serialization and deserialization."
 publish     = false
 
 [dependencies]
-protos = { git = "https://github.com/LiGoldragon/protos", rev = "d0f98aca41104b970862679c622d828222a83cfa" }
+protos = { git = "https://github.com/LiGoldragon/protos", rev = "884f9334a658415053da277973df38549b82994a" }
 
 [lib]
 name = "datom"
